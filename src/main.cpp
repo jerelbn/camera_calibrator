@@ -2,6 +2,7 @@
 #include <opencv2/opencv.hpp> 
 
 #define KEY_ESC 27 // Key to close the program
+#define DOWNSAMPLE_FACTOR 4 // Dividing factor for downsampling the image
 
 int main(int argc, char **argv)
 {
@@ -58,7 +59,7 @@ int main(int argc, char **argv)
 
         // Downsample the image for chessboard finding only
         cv::Mat imgl_gray_downsampled;
-        cv::resize(imgl_gray, imgl_gray_downsampled, cv::Size(imgl.cols/4,imgl.rows/4));
+        cv::resize(imgl_gray, imgl_gray_downsampled, cv::Size(imgl.cols,imgl.rows)/DOWNSAMPLE_FACTOR);
 
         // Find chessboard pattern
         std::vector<cv::Point2f> pts;
@@ -67,11 +68,11 @@ int main(int argc, char **argv)
         if (success) {
             // Scale points back to full resolution
             for (int i = 0; i < pts.size(); ++i)
-                pts[i] *= 4;
+                pts[i] *= DOWNSAMPLE_FACTOR;
 
             // Refine the detected corners
             cv::cornerSubPix(imgl_gray, pts, cv::Size(31,31), cv::Size(-1,-1),
-                             cv::TermCriteria(cv::TermCriteria::EPS+cv::TermCriteria::COUNT, 30, 0.001));
+                             cv::TermCriteria(cv::TermCriteria::EPS+cv::TermCriteria::COUNT, 30, 0.0001));
             
             // Render the chessboard corners on the image
             cv::drawChessboardCorners(imgl, chess_board_size, cv::Mat(pts), success);
