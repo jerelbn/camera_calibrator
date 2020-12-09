@@ -1,8 +1,13 @@
 #include <iostream>
 #include <opencv2/opencv.hpp> 
 
-#define KEY_ESC 27 // Key to close the program
+#define KEY_BREAK 27        // ESC closes the program
+#define KEY_ADD_PTS 32      // SPACEBAR adds detected points to the calibration buffer
+#define KEY_REMOVE_PTS 8    // BACKSPACE removes last added set of points from the calibration buffer
+#define KEY_CLEAR_PTS 255   // DELETE clears all points from the calibration buffer
+#define KEY_CALIBRATE 13    // RETURN runs the calibration routine on the collected points
 #define DOWNSAMPLE_FACTOR 4 // Dividing factor for downsampling the image
+static const cv::Scalar OPENCV_RED = cv::Scalar(0,0,255); 
 
 int main(int argc, char **argv)
 {
@@ -23,9 +28,21 @@ int main(int argc, char **argv)
     cap.set(cv::CAP_PROP_FOURCC, cv::VideoWriter::fourcc('M','J','P','G'));
     cap.set(cv::CAP_PROP_BUFFERSIZE, 1);
 
-    // Calibration properties
+    // Calibration properties and variables
     cv::Size chess_board_size(9,6);
     int chess_board_flags = cv::CALIB_CB_ADAPTIVE_THRESH + cv::CALIB_CB_NORMALIZE_IMAGE + cv::CALIB_CB_FAST_CHECK;
+    float chess_board_square_size_mm = 23;
+
+    std::vector<std::vector<cv::Point3f>> pts_obj(1);
+    for( int i = 0; i < chess_board_size.height; ++i )
+            for( int j = 0; j < chess_board_size.width; ++j )
+                pts_obj[0].push_back(cv::Point3f(j*chess_board_square_size_mm, i*chess_board_square_size_mm, 0));
+
+    std::vector<std::vector<cv::Point2f>> pts_cal;
+    int iFixedPoint = chess_board_size.width - 1;
+    cv::Mat camera_matrix = cv::Mat::eye(3,3,CV_64F);
+    cv::Mat dist_coeffs = cv::Mat::zeros(8,1,CV_64F);
+    std::vector<cv::Mat> rvecs, tvecs;
 
     // Print some basic properties of the device
     double fps = cap.get(cv::CAP_PROP_FPS);
@@ -38,6 +55,7 @@ int main(int argc, char **argv)
 
     // Set width of single image (divide concatenated stereo image by two)
     width /= 2;
+
 
     // Capture images
     while(1)
@@ -78,12 +96,44 @@ int main(int argc, char **argv)
             cv::drawChessboardCorners(imgl, chess_board_size, cv::Mat(pts), success);
         }
 
+        // Draw number of calibration points collected on the image
+        cv::putText(imgl, "Cal size: " + std::to_string(pts_cal.size()), cv::Point(10,30), cv::FONT_HERSHEY_SIMPLEX, 1, OPENCV_RED, 2, cv::LINE_AA);
+
         // Display the calibration image
         cv::imshow("Calibration Image", imgl);
 
         // Break on 'esc' key
-        if(cv::waitKey(1) == KEY_ESC) 
+        int key = cv::waitKey(10);
+        if(key == KEY_BREAK) {
             break;
+        }
+        else if (key == KEY_ADD_PTS) {
+            if (pts.size() > 0)
+                pts_cal.push_back(pts);
+        }
+        else if (key == KEY_REMOVE_PTS) {
+            if (pts_cal.size() > 0)
+                pts_cal.pop_back();
+        }
+        else if (key == KEY_CLEAR_PTS) {
+            pts_cal.clear();
+        }
+        else if (key == KEY_CALIBRATE) {
+            if (pts_cal.size() > 1) {
+                std::cout << "\nComputing camera intrinsic parameters...\n";
+                pts_obj.resize(pts_cal.size(),pts_obj[0]);
+                cv::calibrateCameraRO(pts_obj, pts_cal, imgl.size(), iFixedPoint, camera_matrix, dist_coeffs, rvecs, tvecs, cv::noArray());
+                std::cout << "\nCamera Matrix = \n" << camera_matrix << std::endl;
+                std::cout << "\nDistortion Coefficients = \n" << dist_coeffs << std::endl;
+
+                // Clear vectors to run again
+                pts_cal.clear();
+                camera_matrix.release();
+                dist_coeffs.release();
+                rvecs.clear();
+                tvecs.clear();
+            }
+        }
     }
 
     return 0;
