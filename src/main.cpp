@@ -6,20 +6,40 @@
 #define KEY_REMOVE_PTS 8    // BACKSPACE removes last added set of points from the calibration buffer
 #define KEY_CLEAR_PTS 255   // DELETE clears all points from the calibration buffer
 #define KEY_CALIBRATE 13    // RETURN runs the calibration routine on the collected points
-#define KEY_RESTART 114     // R runs the calibration routine on the collected points
+#define KEY_RESTART 114     // R restarts the calibration collection process
 #define DOWNSAMPLE_FACTOR 4 // Dividing factor for downsampling the image
 static const cv::Scalar OPENCV_RED = cv::Scalar(0,0,255);
 
-enum Pattern {
+enum Pattern : int {
     CHECKERBOARD = 0,
     ASYMMETRIC_CIRCLES = 1
 };
 
 int main(int argc, char **argv)
 {
-    //TODO: read video device number from command line input
+    // Read command line inputs
+    if (argc == 2 && strcmp(argv[1], "--help") == 0) {
+        printf("\n**Camera Calibrator Help**\n\n");
+        printf("Usage: ./camera_calibrator <video_device_number> <pattern_type> <save_filename>\n");
+        printf("\npattern_type:\n    0 - checkerboard\n    1 - asymmetric circle grid\n");
+        printf("\nControls:\n");
+        printf("    ESC         closes the program\n");
+        printf("    SPACEBAR    adds detected points to the calibration buffer\n");
+        printf("    BACKSPACE   removes last added set of points from the calibration buffer\n");
+        printf("    DELETE      clears all points from the calibration buffer\n");
+        printf("    RETURN      runs the calibration routine on the collected points\n");
+        printf("    R           restarts the calibration collection process\n");
+        return 0;
+    }
+    if (argc < 4) {
+        printf("Not enough input arguments.\n");
+        return -1;
+    }
+    std::string device = "/dev/video" + std::string(argv[1]);
+    Pattern pattern = (Pattern)std::strtol(argv[2], argv, 10);
+    std::string filename = argv[3];
+
     // Initialize video device capture
-    std::string device = "/dev/video4";
     int api_preference = cv::CAP_V4L;
     cv::VideoCapture cap(device, api_preference);
     if (!cap.isOpened()) {
@@ -35,8 +55,6 @@ int main(int argc, char **argv)
     cap.set(cv::CAP_PROP_BUFFERSIZE, 1);
 
     // Calibration properties and variables
-    // Pattern pattern = Pattern::CHECKERBOARD;
-    Pattern pattern = Pattern::ASYMMETRIC_CIRCLES;
     int flags;
     cv::Size board_size;
     float shape_separation;
@@ -70,7 +88,6 @@ int main(int argc, char **argv)
     std::vector<cv::Mat> rvecs, tvecs;
     bool calibrating = true;
     cv::Mat imgl_undistorted, imgl_diff;
-    std::string filename = "/tmp/camera_calibration.yaml";
     cv::FileStorage fs;
 
     // Print some basic properties of the device
