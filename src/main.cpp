@@ -70,6 +70,8 @@ int main(int argc, char **argv)
     std::vector<cv::Mat> rvecs, tvecs;
     bool calibrating = true;
     cv::Mat imgl_undistorted, imgl_diff;
+    std::string filename = "/tmp/camera_calibration.yaml";
+    cv::FileStorage fs;
 
     // Print some basic properties of the device
     double fps = cap.get(cv::CAP_PROP_FPS);
@@ -170,13 +172,19 @@ int main(int argc, char **argv)
         }
         else if (key == KEY_CALIBRATE) {
             if (pts_cal.size() > 1) {
+                // Run calibration routine
                 std::cout << "\nComputing camera intrinsic parameters...\n";
                 pts_obj.resize(pts_cal.size(),pts_obj[0]);
                 cv::calibrateCameraRO(pts_obj, pts_cal, imgl.size(), iFixedPoint, camera_matrix, dist_coeffs, rvecs, tvecs, cv::noArray());
                 std::cout << "\nCamera Matrix = \n" << camera_matrix << std::endl;
                 std::cout << "\nDistortion Coefficients = \n" << dist_coeffs << std::endl;
                 calibrating = false;
-                // TODO: save parameters to file
+
+                // Save result to file (overwrites same filename)
+                fs.open(filename, cv::FileStorage::WRITE);
+                fs << "camera_matrix" << camera_matrix;
+                fs << "dist_coeffs" << dist_coeffs;
+                fs.release();
             }
         }
         else if (key == KEY_RESTART) {
