@@ -6,8 +6,14 @@
 #define KEY_REMOVE_PTS 8    // BACKSPACE removes last added set of points from the calibration buffer
 #define KEY_CLEAR_PTS 255   // DELETE clears all points from the calibration buffer
 #define KEY_CALIBRATE 13    // RETURN runs the calibration routine on the collected points
+#define KEY_RESTART 114     // R runs the calibration routine on the collected points
 #define DOWNSAMPLE_FACTOR 4 // Dividing factor for downsampling the image
-static const cv::Scalar OPENCV_RED = cv::Scalar(0,0,255); 
+static const cv::Scalar OPENCV_RED = cv::Scalar(0,0,255);
+
+enum Pattern {
+    CHECKERBOARD = 0,
+    ASYMMETRIC_CIRCLES = 1
+};
 
 int main(int argc, char **argv)
 {
@@ -29,20 +35,41 @@ int main(int argc, char **argv)
     cap.set(cv::CAP_PROP_BUFFERSIZE, 1);
 
     // Calibration properties and variables
-    cv::Size chess_board_size(9,6);
-    int chess_board_flags = cv::CALIB_CB_ADAPTIVE_THRESH + cv::CALIB_CB_NORMALIZE_IMAGE + cv::CALIB_CB_FAST_CHECK;
-    float chess_board_square_size_mm = 23;
-
+    // Pattern pattern = Pattern::CHECKERBOARD;
+    Pattern pattern = Pattern::ASYMMETRIC_CIRCLES;
+    int flags;
+    cv::Size board_size;
+    float shape_separation;
     std::vector<std::vector<cv::Point3f>> pts_obj(1);
-    for( int i = 0; i < chess_board_size.height; ++i )
-            for( int j = 0; j < chess_board_size.width; ++j )
-                pts_obj[0].push_back(cv::Point3f(j*chess_board_square_size_mm, i*chess_board_square_size_mm, 0));
+    switch (pattern) {
+        case Pattern::CHECKERBOARD:
+            flags = cv::CALIB_CB_ADAPTIVE_THRESH + cv::CALIB_CB_NORMALIZE_IMAGE + cv::CALIB_CB_FAST_CHECK;
+            board_size = cv::Size(9,6);
+            shape_separation = 23;
+            for(int i = 0; i < board_size.height; ++i)
+                    for(int j = 0; j < board_size.width; ++j)
+                        pts_obj[0].push_back(cv::Point3f(j*shape_separation, i*shape_separation, 0));
+            break;
+        case Pattern::ASYMMETRIC_CIRCLES:
+            flags = cv::CALIB_CB_ASYMMETRIC_GRID + cv::CALIB_CB_CLUSTERING;
+            board_size = cv::Size(4,11);
+            shape_separation = 20;
+            for(int i = 0; i < board_size.height; ++i)
+                    for(int j = 0; j < board_size.width; ++j)
+                        pts_obj[0].push_back(cv::Point3f((2*j + i%2)*shape_separation, i*shape_separation, 0));
+            break;
+        default:
+            std::cout << "Select a valid pattern:\n  0 - checkerboard\n  1 - asymmetric circles\n";
+            break;
+    }
 
     std::vector<std::vector<cv::Point2f>> pts_cal;
-    int iFixedPoint = chess_board_size.width - 1;
+    int iFixedPoint = board_size.width - 1;
     cv::Mat camera_matrix = cv::Mat::eye(3,3,CV_64F);
     cv::Mat dist_coeffs = cv::Mat::zeros(8,1,CV_64F);
     std::vector<cv::Mat> rvecs, tvecs;
+    bool calibrating = true;
+    cv::Mat imgl_undistorted, imgl_diff;
 
     // Print some basic properties of the device
     double fps = cap.get(cv::CAP_PROP_FPS);
@@ -55,7 +82,6 @@ int main(int argc, char **argv)
 
     // Set width of single image (divide concatenated stereo image by two)
     width /= 2;
-
 
     // Capture images
     while(1)
@@ -81,26 +107,50 @@ int main(int argc, char **argv)
 
         // Find chessboard pattern
         std::vector<cv::Point2f> pts;
-        bool success = findChessboardCorners(imgl_gray_downsampled, chess_board_size, pts, chess_board_flags);
+        bool success;
+        switch (pattern) {
+            case Pattern::CHECKERBOARD:
+                success = cv::findChessboardCorners(imgl_gray_downsampled, board_size, pts, flags);
+                break;
+            case Pattern::ASYMMETRIC_CIRCLES:
+                success = cv::findCirclesGrid(imgl_gray_downsampled, board_size, pts, flags);
+                break;
+            default:
+                std::cout << "Select a valid pattern:\n  0 - checkerboard\n  1 - asymmetric circles\n";
+                break;
+        }
 
         if (success) {
             // Scale points back to full resolution
             for (int i = 0; i < pts.size(); ++i)
                 pts[i] *= DOWNSAMPLE_FACTOR;
 
-            // Refine the detected corners
-            cv::cornerSubPix(imgl_gray, pts, cv::Size(31,31), cv::Size(-1,-1),
-                             cv::TermCriteria(cv::TermCriteria::EPS+cv::TermCriteria::COUNT, 30, 0.0001));
+            // Refine the detected corners for checkerboard patterns
+            if (pattern == Pattern::CHECKERBOARD) {
+                cv::cornerSubPix(imgl_gray, pts, cv::Size(31,31), cv::Size(-1,-1),
+                                 cv::TermCriteria(cv::TermCriteria::EPS+cv::TermCriteria::COUNT, 30, 0.0001));
+            }
             
             // Render the chessboard corners on the image
-            cv::drawChessboardCorners(imgl, chess_board_size, cv::Mat(pts), success);
+            cv::drawChessboardCorners(imgl, board_size, cv::Mat(pts), success);
         }
 
-        // Draw number of calibration points collected on the image
-        cv::putText(imgl, "Cal size: " + std::to_string(pts_cal.size()), cv::Point(10,30), cv::FONT_HERSHEY_SIMPLEX, 1, OPENCV_RED, 2, cv::LINE_AA);
+        // Draw while collecting calibration points
+        if (calibrating) {
+            // Draw number of calibration points collected on the image
+            cv::putText(imgl, "Cal size: " + std::to_string(pts_cal.size()), cv::Point(10,30), cv::FONT_HERSHEY_SIMPLEX, 1, OPENCV_RED, 2, cv::LINE_AA);
 
-        // Display the calibration image
-        cv::imshow("Calibration Image", imgl);
+            // Display the calibration image
+            cv::imshow("Calibration Image", imgl);
+        }
+        else {
+            if (!camera_matrix.empty()) {
+                // Show difference between regular and undistored images
+                cv::undistort(imgl, imgl_undistorted, camera_matrix, dist_coeffs, cv::noArray());
+                cv::absdiff(imgl, imgl_undistorted, imgl_diff);
+                cv::imshow("Calibration Image", imgl_diff);
+            }
+        }
 
         // Break on 'esc' key
         int key = cv::waitKey(10);
@@ -125,8 +175,13 @@ int main(int argc, char **argv)
                 cv::calibrateCameraRO(pts_obj, pts_cal, imgl.size(), iFixedPoint, camera_matrix, dist_coeffs, rvecs, tvecs, cv::noArray());
                 std::cout << "\nCamera Matrix = \n" << camera_matrix << std::endl;
                 std::cout << "\nDistortion Coefficients = \n" << dist_coeffs << std::endl;
-
-                // Clear vectors to run again
+                calibrating = false;
+                // TODO: save parameters to file
+            }
+        }
+        else if (key == KEY_RESTART) {
+            if (!calibrating) {
+                calibrating = true;
                 pts_cal.clear();
                 camera_matrix.release();
                 dist_coeffs.release();
