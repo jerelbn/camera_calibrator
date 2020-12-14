@@ -14,5 +14,4 @@ This is used to calibrate USB cameras - intrinsic and stereo extrinsic calibrati
 1. Go to build folder `cd build`
 1. Run CMake `cmake ..`
 1. Build the exectuable `make -j$(nproc)`
-1. Plug in camera and run executable `./camera_calibrator`
-    * You may need to change `/dev/video0` to your camera source
+1. Get usage instructions with `./camera_calibrator --help`
