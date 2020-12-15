@@ -81,7 +81,7 @@ int main(int argc, char **argv)
         case Pattern::CHECKERBOARD:
             flags = cv::CALIB_CB_ADAPTIVE_THRESH + cv::CALIB_CB_NORMALIZE_IMAGE + cv::CALIB_CB_FAST_CHECK;
             board_size = cv::Size(9,6);
-            shape_separation = 23;
+            shape_separation = 0.0227;
             for(int i = 0; i < board_size.height; ++i)
                     for(int j = 0; j < board_size.width; ++j)
                         pts_obj[0].push_back(cv::Point3f(j*shape_separation, i*shape_separation, 0));
@@ -89,7 +89,7 @@ int main(int argc, char **argv)
         case Pattern::ASYMMETRIC_CIRCLES:
             flags = cv::CALIB_CB_ASYMMETRIC_GRID + cv::CALIB_CB_CLUSTERING;
             board_size = cv::Size(4,11);
-            shape_separation = 20;
+            shape_separation = 0.020;
             for(int i = 0; i < board_size.height; ++i)
                     for(int j = 0; j < board_size.width; ++j)
                         pts_obj[0].push_back(cv::Point3f((2*j + i%2)*shape_separation, i*shape_separation, 0));
@@ -132,6 +132,16 @@ int main(int argc, char **argv)
 
     // Set width of single image (divide concatenated stereo image by two)
     width /= 2;
+
+    // Load intrinsic parameters for stereo calibration
+    if (calib_type == Calibration::STEREO) {
+        fs = cv::FileStorage("cam_left.yaml", cv::FileStorage::READ);
+        fs["Kl"] >> Kl;
+        fs["Dl"] >> Dl;
+        fs = cv::FileStorage("cam_right.yaml", cv::FileStorage::READ);
+        fs["Kr"] >> Kr;
+        fs["Dr"] >> Dr;
+    }
 
     // Capture images
     while(1)
@@ -240,7 +250,25 @@ int main(int argc, char **argv)
                 }
             }
             else if (calib_type == Calibration::STEREO) {
-                // show diff of right warped to left
+                // Compute transforms between cameras
+                cv::Mat Rl, Rr, Pl, Pr, Q;
+                cv::stereoRectify(Kl, Dl, Kr, Dr, imgl.size(), R_lr, T_rlr, Rl, Rr, Pl, Pr, Q);
+
+                // Create maps for rectified images
+                cv::Mat lmap1, lmap2, rmap1, rmap2;
+                cv::initUndistortRectifyMap(Kl, Dl, Rl, Pl, imgl.size(), CV_16SC2, lmap1, lmap2);
+                cv::initUndistortRectifyMap(Kr, Dr, Rr, Pr, imgl.size(), CV_16SC2, rmap1, rmap2);
+
+                // Create rectified images
+                cv::Mat imgl_rect, imgr_rect;
+                cv::remap(imgl_gray, imgl_rect, lmap1, lmap2, cv::INTER_LINEAR);
+                cv::remap(imgr_gray, imgr_rect, rmap1, rmap2, cv::INTER_LINEAR);
+
+                // Stereo matching
+                cv::Mat disp_map;
+                cv::Ptr<cv::StereoBM> matcher = cv::StereoBM::create();
+                matcher->compute(imgl_rect, imgr_rect, disp_map);
+                cv::imshow("Calibration Image", disp_map);
             }
         }
 
@@ -322,11 +350,7 @@ int main(int argc, char **argv)
                     // Run calibration routine
                     std::cout << "\nComputing stereo camera extrinsic parameters...\n";
                     pts_obj.resize(ptsr_cal.size(),pts_obj[0]);
-                    cv::stereoCalibrate(pts_obj, ptsl_cal, ptsr_cal, Kl, Dl, Kr, Dr, imgl.size(), R_lr, T_rlr, Emat, Fmat, 0);
-                    std::cout << "\nDl = \n" << Kl << std::endl;
-                    std::cout << "\nDr = \n" << Kr << std::endl;
-                    std::cout << "\nDl = \n" << Dl << std::endl;
-                    std::cout << "\nDr = \n" << Dr << std::endl;
+                    cv::stereoCalibrate(pts_obj, ptsl_cal, ptsr_cal, Kl, Dl, Kr, Dr, imgl.size(), R_lr, T_rlr, Emat, Fmat, cv::CALIB_FIX_INTRINSIC);
                     std::cout << "\nR = \n" << R_lr << std::endl;
                     std::cout << "\nT = \n" << T_rlr << std::endl;
                     std::cout << "\nE = \n" << Emat << std::endl;
@@ -335,10 +359,6 @@ int main(int argc, char **argv)
 
                     // Save result to file (overwrites same filename)
                     fs.open(filename, cv::FileStorage::WRITE);
-                    fs << "left_camera_matrix" << Kl;
-                    fs << "right_camera_matrix" << Kr;
-                    fs << "left_dist_coeffs" << Dl;
-                    fs << "right_dist_coeffs" << Dr;
                     fs << "R" << R_lr;
                     fs << "T" << T_rlr;
                     fs << "E" << Emat;
