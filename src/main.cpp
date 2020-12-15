@@ -15,13 +15,20 @@ enum Pattern : int {
     ASYMMETRIC_CIRCLES = 1
 };
 
+enum Calibration : int {
+    MONOL = 0,
+    MONOR = 1,
+    STEREO = 2
+};
+
 int main(int argc, char **argv)
 {
     // Read command line inputs
     if (argc == 2 && strcmp(argv[1], "--help") == 0) {
         printf("\n**Camera Calibrator Help**\n\n");
-        printf("Usage: ./camera_calibrator <video_device_number> <pattern_type> <save_filename>\n");
+        printf("Usage: ./camera_calibrator <video_device_number> <pattern_type> <calibration_type>\n");
         printf("\npattern_type:\n    0 - checkerboard\n    1 - asymmetric circle grid\n");
+        printf("\ncalibration_type:\n    0 - monocular left\n    1 - monocular right\n    2 - stereo\n");
         printf("\nControls:\n");
         printf("    ESC         closes the program\n");
         printf("    SPACEBAR    adds detected points to the calibration buffer\n");
@@ -31,13 +38,25 @@ int main(int argc, char **argv)
         printf("    R           restarts the calibration collection process\n");
         return 0;
     }
-    if (argc < 4) {
+    if (argc < 4) { 
         printf("Not enough input arguments.\n");
         return -1;
     }
     std::string device = "/dev/video" + std::string(argv[1]);
     Pattern pattern = (Pattern)std::strtol(argv[2], argv, 10);
-    std::string filename = argv[3];
+    Calibration calib_type = (Calibration)std::strtol(argv[3], argv, 10);
+    std::string filename;
+    switch (calib_type) {
+        case Calibration::MONOL:
+            filename = "cam_left.yaml";
+            break;
+        case Calibration::MONOR:
+            filename = "cam_right.yaml";
+            break;
+        case Calibration::STEREO:
+            filename = "cam_stereo.yaml";
+            break;
+    }
 
     // Initialize video device capture
     int api_preference = cv::CAP_V4L;
@@ -51,7 +70,6 @@ int main(int argc, char **argv)
     cap.set(cv::CAP_PROP_FPS, 60);
     cap.set(cv::CAP_PROP_FRAME_WIDTH, 2560);
     cap.set(cv::CAP_PROP_FRAME_HEIGHT, 960);
-    cap.set(cv::CAP_PROP_FOURCC, cv::VideoWriter::fourcc('M','J','P','G'));
     cap.set(cv::CAP_PROP_BUFFERSIZE, 1);
 
     // Calibration properties and variables
@@ -81,13 +99,26 @@ int main(int argc, char **argv)
             break;
     }
 
-    std::vector<std::vector<cv::Point2f>> pts_cal;
+    std::vector<std::vector<cv::Point2f>> ptsl_cal;
+    std::vector<std::vector<cv::Point2f>> ptsr_cal;
     int iFixedPoint = board_size.width - 1;
-    cv::Mat camera_matrix = cv::Mat::eye(3,3,CV_64F);
-    cv::Mat dist_coeffs = cv::Mat::zeros(8,1,CV_64F);
-    std::vector<cv::Mat> rvecs, tvecs;
+    cv::Mat Kl = cv::Mat::eye(3,3,CV_64F);
+    cv::Mat Kr = cv::Mat::eye(3,3,CV_64F);
+    cv::Mat Dl = cv::Mat::zeros(5,1,CV_64F);
+    cv::Mat Dr = cv::Mat::zeros(5,1,CV_64F);
+    cv::Mat R_lr = cv::Mat::eye(3,3,CV_64F);
+    cv::Mat T_rlr = cv::Mat::zeros(3,1,CV_64F);
+    cv::Mat Emat = cv::Mat::zeros(3,3,CV_64F);
+    cv::Mat Fmat = cv::Mat::zeros(3,3,CV_64F);
+    std::vector<cv::Mat> rvecsl;
+    std::vector<cv::Mat> rvecsr;
+    std::vector<cv::Mat> tvecsl;
+    std::vector<cv::Mat> tvecsr;
     bool calibrating = true;
-    cv::Mat imgl_undistorted, imgl_diff;
+    cv::Mat imgl_undistorted;
+    cv::Mat imgr_undistorted;
+    cv::Mat imgl_diff;
+    cv::Mat imgr_diff;
     cv::FileStorage fs;
 
     // Print some basic properties of the device
@@ -118,56 +149,98 @@ int main(int argc, char **argv)
 
         // Convert image to grayscale and refine the detected corners
         cv::Mat imgl_gray;
+        cv::Mat imgr_gray;
         cv::cvtColor(imgl, imgl_gray, cv::COLOR_BGR2GRAY);
+        cv::cvtColor(imgr, imgr_gray, cv::COLOR_BGR2GRAY);
 
         // Downsample the image for chessboard finding only
         cv::Mat imgl_gray_downsampled;
+        cv::Mat imgr_gray_downsampled;
         cv::resize(imgl_gray, imgl_gray_downsampled, cv::Size(imgl.cols,imgl.rows)/DOWNSAMPLE_FACTOR);
+        cv::resize(imgr_gray, imgr_gray_downsampled, cv::Size(imgr.cols,imgr.rows)/DOWNSAMPLE_FACTOR);
 
         // Find chessboard pattern
-        std::vector<cv::Point2f> pts;
-        bool success;
+        std::vector<cv::Point2f> ptsl;
+        std::vector<cv::Point2f> ptsr;
+        bool success_left;
+        bool success_right;
         switch (pattern) {
             case Pattern::CHECKERBOARD:
-                success = cv::findChessboardCorners(imgl_gray_downsampled, board_size, pts, flags);
+                success_left = cv::findChessboardCorners(imgl_gray_downsampled, board_size, ptsl, flags);
+                success_right = cv::findChessboardCorners(imgr_gray_downsampled, board_size, ptsr, flags);
                 break;
             case Pattern::ASYMMETRIC_CIRCLES:
-                success = cv::findCirclesGrid(imgl_gray_downsampled, board_size, pts, flags);
+                success_left = cv::findCirclesGrid(imgl_gray_downsampled, board_size, ptsl, flags);
+                success_right = cv::findCirclesGrid(imgr_gray_downsampled, board_size, ptsr, flags);
                 break;
             default:
                 std::cout << "Select a valid pattern:\n  0 - checkerboard\n  1 - asymmetric circles\n";
                 break;
         }
 
-        if (success) {
+        if (success_left) {
             // Scale points back to full resolution
-            for (int i = 0; i < pts.size(); ++i)
-                pts[i] *= DOWNSAMPLE_FACTOR;
+            for (int i = 0; i < ptsl.size(); ++i)
+                ptsl[i] *= DOWNSAMPLE_FACTOR;
 
             // Refine the detected corners for checkerboard patterns
             if (pattern == Pattern::CHECKERBOARD) {
-                cv::cornerSubPix(imgl_gray, pts, cv::Size(31,31), cv::Size(-1,-1),
+                cv::cornerSubPix(imgl_gray, ptsl, cv::Size(31,31), cv::Size(-1,-1),
                                  cv::TermCriteria(cv::TermCriteria::EPS+cv::TermCriteria::COUNT, 30, 0.0001));
             }
             
             // Render the chessboard corners on the image
-            cv::drawChessboardCorners(imgl, board_size, cv::Mat(pts), success);
+            cv::drawChessboardCorners(imgl, board_size, cv::Mat(ptsl), success_left);
+        }
+
+        if (success_right) {
+            // Scale points back to full resolution
+            for (int i = 0; i < ptsr.size(); ++i)
+                ptsr[i] *= DOWNSAMPLE_FACTOR;
+
+            // Refine the detected corners for checkerboard patterns
+            if (pattern == Pattern::CHECKERBOARD) {
+                cv::cornerSubPix(imgr_gray, ptsr, cv::Size(31,31), cv::Size(-1,-1),
+                                 cv::TermCriteria(cv::TermCriteria::EPS+cv::TermCriteria::COUNT, 30, 0.0001));
+            }
+            
+            // Render the chessboard corners on the image
+            cv::drawChessboardCorners(imgr, board_size, cv::Mat(ptsr), success_right);
         }
 
         // Draw while collecting calibration points
         if (calibrating) {
             // Draw number of calibration points collected on the image
-            cv::putText(imgl, "Cal size: " + std::to_string(pts_cal.size()), cv::Point(10,30), cv::FONT_HERSHEY_SIMPLEX, 1, OPENCV_RED, 2, cv::LINE_AA);
+            cv::putText(imgl, "Cal size: " + std::to_string(ptsl_cal.size()), cv::Point(10,30), cv::FONT_HERSHEY_SIMPLEX, 1, OPENCV_RED, 2, cv::LINE_AA);
+            cv::putText(imgr, "Cal size: " + std::to_string(ptsr_cal.size()), cv::Point(10,30), cv::FONT_HERSHEY_SIMPLEX, 1, OPENCV_RED, 2, cv::LINE_AA);
 
             // Display the calibration image
-            cv::imshow("Calibration Image", imgl);
+            if (calib_type == Calibration::MONOL)
+                cv::imshow("Calibration Image", imgl);
+            else if (calib_type == Calibration::MONOR)
+                cv::imshow("Calibration Image", imgr);
+            else if (calib_type == Calibration::STEREO) {
+                cv::Mat imgs;
+                cv::hconcat(imgl, imgr, imgs);
+                cv::imshow("Calibration Image", imgs);
+            }
         }
         else {
-            if (!camera_matrix.empty()) {
-                // Show difference between regular and undistored images
-                cv::undistort(imgl, imgl_undistorted, camera_matrix, dist_coeffs, cv::noArray());
-                cv::absdiff(imgl, imgl_undistorted, imgl_diff);
-                cv::imshow("Calibration Image", imgl_diff);
+            // Show difference between regular and undistored images
+            if (calib_type == Calibration::MONOL || calib_type == Calibration::MONOR) {
+                if (!Kl.empty()) {
+                    cv::undistort(imgl, imgl_undistorted, Kl, Dl);
+                    cv::absdiff(imgl, imgl_undistorted, imgl_diff);
+                    cv::imshow("Calibration Image", imgl_diff);
+                }
+                if (!Kr.empty()) {
+                    cv::undistort(imgr, imgr_undistorted, Kr, Dr);
+                    cv::absdiff(imgr, imgr_undistorted, imgr_diff);
+                    cv::imshow("Calibration Image", imgr_diff);
+                }
+            }
+            else if (calib_type == Calibration::STEREO) {
+                // show diff of right warped to left
             }
         }
 
@@ -177,41 +250,120 @@ int main(int argc, char **argv)
             break;
         }
         else if (key == KEY_ADD_PTS) {
-            if (pts.size() > 0)
-                pts_cal.push_back(pts);
+            std::cout << ptsr.size() << std::endl;
+            if (calib_type == Calibration::MONOL) {
+                if (ptsl.size() == board_size.width*board_size.height)
+                    ptsl_cal.push_back(ptsl);
+            }
+            else if (calib_type == Calibration::MONOR) {
+                if (ptsr.size() == board_size.width*board_size.height)
+                    ptsr_cal.push_back(ptsr);
+            }
+            else if (calib_type == Calibration::STEREO) {
+                if (ptsl.size() == board_size.width*board_size.height && ptsr.size() == board_size.width*board_size.height) {
+                    ptsl_cal.push_back(ptsl);
+                    ptsr_cal.push_back(ptsr);
+                }
+            }
         }
         else if (key == KEY_REMOVE_PTS) {
-            if (pts_cal.size() > 0)
-                pts_cal.pop_back();
+            if (ptsl_cal.size() > 0)
+                ptsl_cal.pop_back();
+            if (ptsr_cal.size() > 0)
+                ptsr_cal.pop_back();
         }
         else if (key == KEY_CLEAR_PTS) {
-            pts_cal.clear();
+            ptsl_cal.clear();
+            ptsr_cal.clear();
         }
         else if (key == KEY_CALIBRATE) {
-            if (pts_cal.size() > 1) {
-                // Run calibration routine
-                std::cout << "\nComputing camera intrinsic parameters...\n";
-                pts_obj.resize(pts_cal.size(),pts_obj[0]);
-                cv::calibrateCameraRO(pts_obj, pts_cal, imgl.size(), iFixedPoint, camera_matrix, dist_coeffs, rvecs, tvecs, cv::noArray());
-                std::cout << "\nCamera Matrix = \n" << camera_matrix << std::endl;
-                std::cout << "\nDistortion Coefficients = \n" << dist_coeffs << std::endl;
-                calibrating = false;
+            if (calib_type == Calibration::MONOL) {
+                if (ptsl_cal.size() > 1) {
+                    // Run calibration routine
+                    std::cout << "\nComputing left camera intrinsic parameters...\n";
+                    pts_obj.resize(ptsl_cal.size(),pts_obj[0]);
+                    cv::calibrateCameraRO(pts_obj, ptsl_cal, imgl.size(), iFixedPoint, Kl, Dl, rvecsl, tvecsl, cv::noArray());
+                    std::cout << "\nKl = \n" << Kl << std::endl;
+                    std::cout << "\nDl = \n" << Dl << std::endl;
+                    calibrating = false;
 
-                // Save result to file (overwrites same filename)
-                fs.open(filename, cv::FileStorage::WRITE);
-                fs << "camera_matrix" << camera_matrix;
-                fs << "dist_coeffs" << dist_coeffs;
-                fs.release();
+                    // Save result to file (overwrites same filename)
+                    fs.open(filename, cv::FileStorage::WRITE);
+                    fs << "Kl" << Kl;
+                    fs << "Dl" << Dl;
+                    fs.release();
+                }
+            }
+            else if (calib_type == Calibration::MONOR) {
+                if (ptsr_cal.size() > 1) {
+                    // Run calibration routine
+                    std::cout << "\nComputing right camera intrinsic parameters...\n";
+                    pts_obj.resize(ptsr_cal.size(),pts_obj[0]);
+                    cv::calibrateCameraRO(pts_obj, ptsr_cal, imgr.size(), iFixedPoint, Kr, Dr, rvecsr, tvecsr, cv::noArray());
+                    std::cout << "\nKr = \n" << Kr << std::endl;
+                    std::cout << "\nDr = \n" << Dr << std::endl;
+                    calibrating = false;
+
+                    // Save result to file (overwrites same filename)
+                    fs.open(filename, cv::FileStorage::WRITE);
+                    fs << "Kr" << Kr;
+                    fs << "Dr" << Dr;
+                    fs.release();
+                }
+            }
+            else if (calib_type == Calibration::STEREO){
+                if (ptsl_cal.size() > 1 && ptsr_cal.size() > 1) {
+                    // Ensure proper container sizes
+                    if (ptsl_cal.size() != ptsr_cal.size()) {
+                        std::cout << "Left and right calibration point containers are not the same size!\n";
+                        return -1;
+                    }
+
+                    // Run calibration routine
+                    std::cout << "\nComputing stereo camera extrinsic parameters...\n";
+                    pts_obj.resize(ptsr_cal.size(),pts_obj[0]);
+                    cv::stereoCalibrate(pts_obj, ptsl_cal, ptsr_cal, Kl, Dl, Kr, Dr, imgl.size(), R_lr, T_rlr, Emat, Fmat, 0);
+                    std::cout << "\nDl = \n" << Kl << std::endl;
+                    std::cout << "\nDr = \n" << Kr << std::endl;
+                    std::cout << "\nDl = \n" << Dl << std::endl;
+                    std::cout << "\nDr = \n" << Dr << std::endl;
+                    std::cout << "\nR = \n" << R_lr << std::endl;
+                    std::cout << "\nT = \n" << T_rlr << std::endl;
+                    std::cout << "\nE = \n" << Emat << std::endl;
+                    std::cout << "\nF = \n" << Fmat << std::endl;
+                    calibrating = false;
+
+                    // Save result to file (overwrites same filename)
+                    fs.open(filename, cv::FileStorage::WRITE);
+                    fs << "left_camera_matrix" << Kl;
+                    fs << "right_camera_matrix" << Kr;
+                    fs << "left_dist_coeffs" << Dl;
+                    fs << "right_dist_coeffs" << Dr;
+                    fs << "R" << R_lr;
+                    fs << "T" << T_rlr;
+                    fs << "E" << Emat;
+                    fs << "F" << Fmat;
+                    fs.release();
+                }
             }
         }
         else if (key == KEY_RESTART) {
             if (!calibrating) {
                 calibrating = true;
-                pts_cal.clear();
-                camera_matrix.release();
-                dist_coeffs.release();
-                rvecs.clear();
-                tvecs.clear();
+                ptsl_cal.clear();
+                ptsr_cal.clear();
+                Kl.release();
+                Kr.release();
+                Dl.release();
+                Dr.release();
+                R_lr.release();
+                T_rlr.release();
+                Emat.release();
+                Fmat.release();
+                rvecsl.clear();
+                rvecsr.clear();
+                tvecsl.clear();
+                tvecsr.clear();
             }
         }
     }
