@@ -7,7 +7,6 @@
 #define KEY_CLEAR_PTS 255   // DELETE clears all points from the calibration buffer
 #define KEY_CALIBRATE 13    // RETURN runs the calibration routine on the collected points
 #define KEY_RESTART 114     // R restarts the calibration collection process
-#define DOWNSAMPLE_FACTOR 4 // Dividing factor for downsampling the image
 static const cv::Scalar OPENCV_RED = cv::Scalar(0,0,255);
 
 enum Pattern : int {
@@ -74,12 +73,14 @@ int main(int argc, char **argv)
 
     // Calibration properties and variables
     int flags;
+    int downsample_factor;
     cv::Size board_size;
     float shape_separation;
     std::vector<std::vector<cv::Point3f>> pts_obj(1);
     switch (pattern) {
         case Pattern::CHECKERBOARD:
             flags = cv::CALIB_CB_ADAPTIVE_THRESH + cv::CALIB_CB_NORMALIZE_IMAGE + cv::CALIB_CB_FAST_CHECK;
+            downsample_factor = 4;
             board_size = cv::Size(9,6);
             shape_separation = 0.0227;
             for(int i = 0; i < board_size.height; ++i)
@@ -88,6 +89,7 @@ int main(int argc, char **argv)
             break;
         case Pattern::ASYMMETRIC_CIRCLES:
             flags = cv::CALIB_CB_ASYMMETRIC_GRID + cv::CALIB_CB_CLUSTERING;
+            downsample_factor = 1;
             board_size = cv::Size(4,11);
             shape_separation = 0.020;
             for(int i = 0; i < board_size.height; ++i)
@@ -163,11 +165,17 @@ int main(int argc, char **argv)
         cv::cvtColor(imgl, imgl_gray, cv::COLOR_BGR2GRAY);
         cv::cvtColor(imgr, imgr_gray, cv::COLOR_BGR2GRAY);
 
+        // Blur to reduce noise
+        cv::Mat imgl_blur;
+        cv::Mat imgr_blur;
+        cv::GaussianBlur(imgl_gray, imgl_blur, cv::Size(51,51), 2.0);
+        cv::GaussianBlur(imgr_gray, imgr_blur, cv::Size(51,51), 2.0);
+
         // Downsample the image for chessboard finding only
-        cv::Mat imgl_gray_downsampled;
-        cv::Mat imgr_gray_downsampled;
-        cv::resize(imgl_gray, imgl_gray_downsampled, cv::Size(imgl.cols,imgl.rows)/DOWNSAMPLE_FACTOR);
-        cv::resize(imgr_gray, imgr_gray_downsampled, cv::Size(imgr.cols,imgr.rows)/DOWNSAMPLE_FACTOR);
+        cv::Mat imgl_downsampled;
+        cv::Mat imgr_downsampled;
+        cv::resize(imgl_blur, imgl_downsampled, cv::Size(imgl.cols,imgl.rows)/downsample_factor);
+        cv::resize(imgr_blur, imgr_downsampled, cv::Size(imgr.cols,imgr.rows)/downsample_factor);
 
         // Find chessboard pattern
         std::vector<cv::Point2f> ptsl;
@@ -176,12 +184,12 @@ int main(int argc, char **argv)
         bool success_right;
         switch (pattern) {
             case Pattern::CHECKERBOARD:
-                success_left = cv::findChessboardCorners(imgl_gray_downsampled, board_size, ptsl, flags);
-                success_right = cv::findChessboardCorners(imgr_gray_downsampled, board_size, ptsr, flags);
+                success_left = cv::findChessboardCorners(imgl_downsampled, board_size, ptsl, flags);
+                success_right = cv::findChessboardCorners(imgr_downsampled, board_size, ptsr, flags);
                 break;
             case Pattern::ASYMMETRIC_CIRCLES:
-                success_left = cv::findCirclesGrid(imgl_gray_downsampled, board_size, ptsl, flags);
-                success_right = cv::findCirclesGrid(imgr_gray_downsampled, board_size, ptsr, flags);
+                success_left = cv::findCirclesGrid(imgl_downsampled, board_size, ptsl, flags);
+                success_right = cv::findCirclesGrid(imgr_downsampled, board_size, ptsr, flags);
                 break;
             default:
                 std::cout << "Select a valid pattern:\n  0 - checkerboard\n  1 - asymmetric circles\n";
@@ -191,11 +199,11 @@ int main(int argc, char **argv)
         if (success_left) {
             // Scale points back to full resolution
             for (int i = 0; i < ptsl.size(); ++i)
-                ptsl[i] *= DOWNSAMPLE_FACTOR;
+                ptsl[i] *= downsample_factor;
 
             // Refine the detected corners for checkerboard patterns
             if (pattern == Pattern::CHECKERBOARD) {
-                cv::cornerSubPix(imgl_gray, ptsl, cv::Size(31,31), cv::Size(-1,-1),
+                cv::cornerSubPix(imgl_blur, ptsl, cv::Size(31,31), cv::Size(-1,-1),
                                  cv::TermCriteria(cv::TermCriteria::EPS+cv::TermCriteria::COUNT, 30, 0.0001));
             }
             
@@ -206,11 +214,11 @@ int main(int argc, char **argv)
         if (success_right) {
             // Scale points back to full resolution
             for (int i = 0; i < ptsr.size(); ++i)
-                ptsr[i] *= DOWNSAMPLE_FACTOR;
+                ptsr[i] *= downsample_factor;
 
             // Refine the detected corners for checkerboard patterns
             if (pattern == Pattern::CHECKERBOARD) {
-                cv::cornerSubPix(imgr_gray, ptsr, cv::Size(31,31), cv::Size(-1,-1),
+                cv::cornerSubPix(imgr_blur, ptsr, cv::Size(31,31), cv::Size(-1,-1),
                                  cv::TermCriteria(cv::TermCriteria::EPS+cv::TermCriteria::COUNT, 30, 0.0001));
             }
             
@@ -239,13 +247,13 @@ int main(int argc, char **argv)
             // Show difference between regular and undistored images
             if (calib_type == Calibration::MONOL || calib_type == Calibration::MONOR) {
                 if (!Kl.empty()) {
-                    cv::undistort(imgl, imgl_undistorted, Kl, Dl);
-                    cv::absdiff(imgl, imgl_undistorted, imgl_diff);
+                    cv::undistort(imgl_gray, imgl_undistorted, Kl, Dl);
+                    cv::absdiff(imgl_gray, imgl_undistorted, imgl_diff);
                     cv::imshow("Calibration Image", imgl_diff);
                 }
                 if (!Kr.empty()) {
-                    cv::undistort(imgr, imgr_undistorted, Kr, Dr);
-                    cv::absdiff(imgr, imgr_undistorted, imgr_diff);
+                    cv::undistort(imgr_gray, imgr_undistorted, Kr, Dr);
+                    cv::absdiff(imgr_gray, imgr_undistorted, imgr_diff);
                     cv::imshow("Calibration Image", imgr_diff);
                 }
             }
@@ -256,8 +264,8 @@ int main(int argc, char **argv)
 
                 // Create maps for rectified images
                 cv::Mat lmap1, lmap2, rmap1, rmap2;
-                cv::initUndistortRectifyMap(Kl, Dl, Rl, Pl, imgl.size(), CV_16SC2, lmap1, lmap2);
-                cv::initUndistortRectifyMap(Kr, Dr, Rr, Pr, imgl.size(), CV_16SC2, rmap1, rmap2);
+                cv::initUndistortRectifyMap(Kl, Dl, Rl, Pl, imgl.size(), CV_32F, lmap1, lmap2);
+                cv::initUndistortRectifyMap(Kr, Dr, Rr, Pr, imgr.size(), CV_32F, rmap1, rmap2);
 
                 // Create rectified images
                 cv::Mat imgl_rect, imgr_rect;
@@ -265,10 +273,12 @@ int main(int argc, char **argv)
                 cv::remap(imgr_gray, imgr_rect, rmap1, rmap2, cv::INTER_LINEAR);
 
                 // Stereo matching
-                cv::Mat disp_map;
-                cv::Ptr<cv::StereoBM> matcher = cv::StereoBM::create();
-                matcher->compute(imgl_rect, imgr_rect, disp_map);
-                cv::imshow("Calibration Image", disp_map);
+                cv::Mat img_lines;
+                cv::hconcat(imgl_rect, imgr_rect, img_lines);
+                cv::cvtColor(img_lines, img_lines, cv::COLOR_GRAY2BGR);
+                for(int j = img_lines.rows/20; j < img_lines.rows; j += img_lines.rows/20 )
+                    cv::line(img_lines, cv::Point(0, j), cv::Point(img_lines.cols, j), cv::Scalar(0, 0, 255), 1, 8);
+                cv::imshow("Calibration Image", img_lines);
             }
         }
 
