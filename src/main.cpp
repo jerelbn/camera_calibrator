@@ -15,10 +15,57 @@ enum Pattern : int {
 };
 
 enum Calibration : int {
-    MONOL = 0,
-    MONOR = 1,
-    STEREO = 2
+    MONO = 0,
+    MONOL = 1,
+    MONOR = 2,
+    STEREO = 3
 };
+
+std::vector<cv::Point2f> getBoardCorners(cv::Mat &img, cv::Mat &img_gray, int downsample_factor, const Pattern &pattern, const cv::Size &board_size, int flags) {
+    // Convert image to grayscale and refine the detected corners
+    cv::cvtColor(img, img_gray, cv::COLOR_BGR2GRAY);
+
+    // Blur to reduce noise
+    cv::Mat img_blur;
+    // cv::GaussianBlur(img_gray, img_blur, cv::Size(51,51), 2.0);.
+    cv::medianBlur(img_gray, img_blur, 3);
+
+    // Downsample the image for chessboard finding only
+    cv::Mat img_downsampled;
+    cv::resize(img_blur, img_downsampled, cv::Size(img.cols,img.rows)/downsample_factor);
+
+    // Find chessboard pattern
+    std::vector<cv::Point2f> pts;
+    bool success;
+    switch (pattern) {
+        case Pattern::CHECKERBOARD:
+            success = cv::findChessboardCorners(img_downsampled, board_size, pts, flags);
+            break;
+        case Pattern::ASYMMETRIC_CIRCLES:
+            success = cv::findCirclesGrid(img_downsampled, board_size, pts, flags);
+            break;
+        default:
+            std::cout << "Select a valid pattern:\n  0 - checkerboard\n  1 - asymmetric circles\n";
+            break;
+    }
+
+    if (success) {
+        // Scale points back to full resolution
+        for (int i = 0; i < pts.size(); ++i)
+            pts[i] *= downsample_factor;
+
+        // Refine the detected corners for checkerboard patterns
+        if (pattern == Pattern::CHECKERBOARD) {
+            cv::cornerSubPix(img_blur, pts, cv::Size(31,31), cv::Size(-1,-1),
+                                cv::TermCriteria(cv::TermCriteria::EPS+cv::TermCriteria::COUNT, 30, 0.0001));
+        }
+        
+        // Render the chessboard corners on the image
+        cv::drawChessboardCorners(img, board_size, cv::Mat(pts), success);
+    }
+
+    return pts;
+}
 
 int main(int argc, char **argv)
 {
@@ -27,7 +74,7 @@ int main(int argc, char **argv)
         printf("\n**Camera Calibrator Help**\n\n");
         printf("Usage: ./camera_calibrator <video_device_number> <pattern_type> <calibration_type>\n");
         printf("\npattern_type:\n    0 - checkerboard\n    1 - asymmetric circle grid\n");
-        printf("\ncalibration_type:\n    0 - monocular left\n    1 - monocular right\n    2 - stereo\n");
+        printf("\ncalibration_type:\n    0 - monocular\n    1 - monocular left\n    2 - monocular right\n    3 - stereo\n");
         printf("\nControls:\n");
         printf("    ESC         closes the program\n");
         printf("    SPACEBAR    adds detected points to the calibration buffer\n");
@@ -46,6 +93,9 @@ int main(int argc, char **argv)
     Calibration calib_type = (Calibration)std::strtol(argv[3], argv, 10);
     std::string filename;
     switch (calib_type) {
+        case Calibration::MONO:
+            filename = "cam_mono.yaml";
+            break;
         case Calibration::MONOL:
             filename = "cam_left.yaml";
             break;
@@ -155,85 +205,36 @@ int main(int argc, char **argv)
             break;
         }
 
-        // Split the concatenated stereo image into left and right images
-        cv::Mat imgl = img(cv::Rect(0, 0, width, height));
-        cv::Mat imgr = img(cv::Rect(width, 0, width, height));
-
-        // Convert image to grayscale and refine the detected corners
-        cv::Mat imgl_gray;
-        cv::Mat imgr_gray;
-        cv::cvtColor(imgl, imgl_gray, cv::COLOR_BGR2GRAY);
-        cv::cvtColor(imgr, imgr_gray, cv::COLOR_BGR2GRAY);
-
-        // Blur to reduce noise
-        cv::Mat imgl_blur;
-        cv::Mat imgr_blur;
-        cv::GaussianBlur(imgl_gray, imgl_blur, cv::Size(51,51), 2.0);
-        cv::GaussianBlur(imgr_gray, imgr_blur, cv::Size(51,51), 2.0);
-
-        // Downsample the image for chessboard finding only
-        cv::Mat imgl_downsampled;
-        cv::Mat imgr_downsampled;
-        cv::resize(imgl_blur, imgl_downsampled, cv::Size(imgl.cols,imgl.rows)/downsample_factor);
-        cv::resize(imgr_blur, imgr_downsampled, cv::Size(imgr.cols,imgr.rows)/downsample_factor);
+        // Stereo camera needs image split, while pure mono camera does not
+        cv::Mat imgl;
+        cv::Mat imgr;
+        if (calib_type == Calibration::MONO) {
+            imgl = img;
+        }
+        else {
+            // Split the concatenated stereo image into left and right images
+            imgl = img(cv::Rect(0, 0, width, height));
+            imgr = img(cv::Rect(width, 0, width, height));
+        }
 
         // Find chessboard pattern
+        cv::Mat imgl_gray;
+        cv::Mat imgr_gray;
         std::vector<cv::Point2f> ptsl;
         std::vector<cv::Point2f> ptsr;
-        bool success_left;
-        bool success_right;
-        switch (pattern) {
-            case Pattern::CHECKERBOARD:
-                success_left = cv::findChessboardCorners(imgl_downsampled, board_size, ptsl, flags);
-                success_right = cv::findChessboardCorners(imgr_downsampled, board_size, ptsr, flags);
-                break;
-            case Pattern::ASYMMETRIC_CIRCLES:
-                success_left = cv::findCirclesGrid(imgl_downsampled, board_size, ptsl, flags);
-                success_right = cv::findCirclesGrid(imgr_downsampled, board_size, ptsr, flags);
-                break;
-            default:
-                std::cout << "Select a valid pattern:\n  0 - checkerboard\n  1 - asymmetric circles\n";
-                break;
-        }
-
-        if (success_left) {
-            // Scale points back to full resolution
-            for (int i = 0; i < ptsl.size(); ++i)
-                ptsl[i] *= downsample_factor;
-
-            // Refine the detected corners for checkerboard patterns
-            if (pattern == Pattern::CHECKERBOARD) {
-                cv::cornerSubPix(imgl_blur, ptsl, cv::Size(31,31), cv::Size(-1,-1),
-                                 cv::TermCriteria(cv::TermCriteria::EPS+cv::TermCriteria::COUNT, 30, 0.0001));
-            }
-            
-            // Render the chessboard corners on the image
-            cv::drawChessboardCorners(imgl, board_size, cv::Mat(ptsl), success_left);
-        }
-
-        if (success_right) {
-            // Scale points back to full resolution
-            for (int i = 0; i < ptsr.size(); ++i)
-                ptsr[i] *= downsample_factor;
-
-            // Refine the detected corners for checkerboard patterns
-            if (pattern == Pattern::CHECKERBOARD) {
-                cv::cornerSubPix(imgr_blur, ptsr, cv::Size(31,31), cv::Size(-1,-1),
-                                 cv::TermCriteria(cv::TermCriteria::EPS+cv::TermCriteria::COUNT, 30, 0.0001));
-            }
-            
-            // Render the chessboard corners on the image
-            cv::drawChessboardCorners(imgr, board_size, cv::Mat(ptsr), success_right);
-        }
+        ptsl = getBoardCorners(imgl, imgl_gray, downsample_factor, pattern, board_size, flags);
+        if (calib_type == Calibration::MONOR || calib_type == Calibration::STEREO)
+            ptsr = getBoardCorners(imgr, imgr_gray, downsample_factor, pattern, board_size, flags);
 
         // Draw while collecting calibration points
         if (calibrating) {
             // Draw number of calibration points collected on the image
             cv::putText(imgl, "Cal size: " + std::to_string(ptsl_cal.size()), cv::Point(10,30), cv::FONT_HERSHEY_SIMPLEX, 1, OPENCV_RED, 2, cv::LINE_AA);
-            cv::putText(imgr, "Cal size: " + std::to_string(ptsr_cal.size()), cv::Point(10,30), cv::FONT_HERSHEY_SIMPLEX, 1, OPENCV_RED, 2, cv::LINE_AA);
+            if (calib_type == Calibration::MONOR || calib_type == Calibration::STEREO)
+                cv::putText(imgr, "Cal size: " + std::to_string(ptsr_cal.size()), cv::Point(10,30), cv::FONT_HERSHEY_SIMPLEX, 1, OPENCV_RED, 2, cv::LINE_AA);
 
             // Display the calibration image
-            if (calib_type == Calibration::MONOL)
+            if (calib_type == Calibration::MONO || calib_type == Calibration::MONOL)
                 cv::imshow("Calibration Image", imgl);
             else if (calib_type == Calibration::MONOR)
                 cv::imshow("Calibration Image", imgr);
@@ -245,7 +246,7 @@ int main(int argc, char **argv)
         }
         else {
             // Show difference between regular and undistored images
-            if (calib_type == Calibration::MONOL || calib_type == Calibration::MONOR) {
+            if (calib_type != Calibration::STEREO) {
                 if (!Kl.empty()) {
                     cv::undistort(imgl_gray, imgl_undistorted, Kl, Dl);
                     cv::absdiff(imgl_gray, imgl_undistorted, imgl_diff);
@@ -289,7 +290,7 @@ int main(int argc, char **argv)
         }
         else if (key == KEY_ADD_PTS) {
             std::cout << ptsr.size() << std::endl;
-            if (calib_type == Calibration::MONOL) {
+            if (calib_type == Calibration::MONO || calib_type == Calibration::MONOL) {
                 if (ptsl.size() == board_size.width*board_size.height)
                     ptsl_cal.push_back(ptsl);
             }
@@ -315,20 +316,35 @@ int main(int argc, char **argv)
             ptsr_cal.clear();
         }
         else if (key == KEY_CALIBRATE) {
-            if (calib_type == Calibration::MONOL) {
+            if (calib_type == Calibration::MONO || calib_type == Calibration::MONOL) {
                 if (ptsl_cal.size() > 1) {
                     // Run calibration routine
-                    std::cout << "\nComputing left camera intrinsic parameters...\n";
+                    if (calib_type == Calibration::MONO)
+                        std::cout << "\nComputing camera intrinsic parameters...\n";
+                    else
+                        std::cout << "\nComputing left camera intrinsic parameters...\n";
                     pts_obj.resize(ptsl_cal.size(),pts_obj[0]);
                     cv::calibrateCameraRO(pts_obj, ptsl_cal, imgl.size(), iFixedPoint, Kl, Dl, rvecsl, tvecsl, cv::noArray());
-                    std::cout << "\nKl = \n" << Kl << std::endl;
-                    std::cout << "\nDl = \n" << Dl << std::endl;
+                    if (calib_type == Calibration::MONO) {
+                        std::cout << "\nK = \n" << Kl << std::endl;
+                        std::cout << "\nD = \n" << Dl << std::endl;
+                    }
+                    else {
+                        std::cout << "\nKl = \n" << Kl << std::endl;
+                        std::cout << "\nDl = \n" << Dl << std::endl;
+                    }
                     calibrating = false;
 
                     // Save result to file (overwrites same filename)
                     fs.open(filename, cv::FileStorage::WRITE);
-                    fs << "Kl" << Kl;
-                    fs << "Dl" << Dl;
+                    if (calib_type == Calibration::MONO) {
+                        fs << "K" << Kl;
+                        fs << "D" << Dl;
+                    }
+                    else {
+                        fs << "Kl" << Kl;
+                        fs << "Dl" << Dl;
+                    }
                     fs.release();
                 }
             }
