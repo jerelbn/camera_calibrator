@@ -27,8 +27,7 @@ std::vector<cv::Point2f> getBoardCorners(cv::Mat &img, cv::Mat &img_gray, int do
 
     // Blur to reduce noise
     cv::Mat img_blur;
-    // cv::GaussianBlur(img_gray, img_blur, cv::Size(51,51), 2.0);.
-    cv::medianBlur(img_gray, img_blur, 3);
+    cv::medianBlur(img_gray, img_blur, 5);
 
     // Downsample the image for chessboard finding only
     cv::Mat img_downsampled;
@@ -154,14 +153,14 @@ int main(int argc, char **argv)
     std::vector<std::vector<cv::Point2f>> ptsl_cal;
     std::vector<std::vector<cv::Point2f>> ptsr_cal;
     int iFixedPoint = board_size.width - 1;
-    cv::Mat Kl = cv::Mat::eye(3,3,CV_64F);
-    cv::Mat Kr = cv::Mat::eye(3,3,CV_64F);
-    cv::Mat Dl = cv::Mat::zeros(5,1,CV_64F);
-    cv::Mat Dr = cv::Mat::zeros(5,1,CV_64F);
-    cv::Mat R_lr = cv::Mat::eye(3,3,CV_64F);
-    cv::Mat T_rlr = cv::Mat::zeros(3,1,CV_64F);
-    cv::Mat Emat = cv::Mat::zeros(3,3,CV_64F);
-    cv::Mat Fmat = cv::Mat::zeros(3,3,CV_64F);
+    cv::Mat Kl;
+    cv::Mat Kr;
+    cv::Mat Dl;
+    cv::Mat Dr;
+    cv::Mat R_lr;
+    cv::Mat T_rlr;
+    cv::Mat Emat;
+    cv::Mat Fmat;
     std::vector<cv::Mat> rvecsl;
     std::vector<cv::Mat> rvecsr;
     std::vector<cv::Mat> tvecsl;
@@ -327,11 +326,11 @@ int main(int argc, char **argv)
                     cv::calibrateCameraRO(pts_obj, ptsl_cal, imgl.size(), iFixedPoint, Kl, Dl, rvecsl, tvecsl, cv::noArray());
                     if (calib_type == Calibration::MONO) {
                         std::cout << "\nK = \n" << Kl << std::endl;
-                        std::cout << "\nD = \n" << Dl << std::endl;
+                        std::cout << "\nD = \n" << Dl << "\n\n";
                     }
                     else {
                         std::cout << "\nKl = \n" << Kl << std::endl;
-                        std::cout << "\nDl = \n" << Dl << std::endl;
+                        std::cout << "\nDl = \n" << Dl << "\n\n";
                     }
                     calibrating = false;
 
@@ -355,7 +354,7 @@ int main(int argc, char **argv)
                     pts_obj.resize(ptsr_cal.size(),pts_obj[0]);
                     cv::calibrateCameraRO(pts_obj, ptsr_cal, imgr.size(), iFixedPoint, Kr, Dr, rvecsr, tvecsr, cv::noArray());
                     std::cout << "\nKr = \n" << Kr << std::endl;
-                    std::cout << "\nDr = \n" << Dr << std::endl;
+                    std::cout << "\nDr = \n" << Dr << "\n\n";
                     calibrating = false;
 
                     // Save result to file (overwrites same filename)
