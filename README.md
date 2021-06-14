@@ -15,3 +15,10 @@ This is used to calibrate USB cameras - intrinsic and stereo extrinsic calibrati
 1. Run CMake `cmake ..`
 1. Build the exectuable `make -j$(nproc)`
 1. Get usage instructions with `./camera_calibrator --help`
+
+## Additional Info
+1. These calibrations required either a flat chessboard pattern or asymmetric circles grid pattern
+1. For thermal calibration:
+    * Cut and sand blast sheet metal about the size of your laptop
+    * Spray black chalk paint on this with the asymmetric circles pattern taped off (metal circles, black background)
+    * Rest the metal on a running laptop and it will be heated enough for the pattern to be detected
