@@ -71,9 +71,12 @@ int main(int argc, char **argv)
     // Read command line inputs
     if (argc == 2 && strcmp(argv[1], "--help") == 0) {
         printf("\n**Camera Calibrator Help**\n\n");
-        printf("Usage: ./camera_calibrator <video_device_number> <pattern_type> <calibration_type>\n");
+        printf("Usage: ./camera_calibrator <video_device_number> <pattern_type> <calibration_type> <pattern_width> <pattern_height> <downsample_factor>\n");
         printf("\npattern_type:\n    0 - checkerboard\n    1 - asymmetric circle grid\n");
         printf("\ncalibration_type:\n    0 - monocular\n    1 - monocular left\n    2 - monocular right\n    3 - stereo\n");
+        printf("\npattern_width:\n    - number of horizontal corners to find\n");
+        printf("\npattern_height:\n    - number of vertical corners to find\n");
+        printf("\ndownsample_factor:\n    - division factor to downsample image (1 keeps original size, 2 cuts it in half, etc.)\n");
         printf("\nControls:\n");
         printf("    ESC         closes the program\n");
         printf("    SPACEBAR    adds detected points to the calibration buffer\n");
@@ -107,30 +110,28 @@ int main(int argc, char **argv)
     }
 
     // Initialize video device capture
-    int api_preference = cv::CAP_V4L;
+    int api_preference = cv::CAP_V4L2;
     cv::VideoCapture cap(device, api_preference);
     if (!cap.isOpened()) {
         printf("Cannot open video stream: %s\n", device.c_str());
         return -1;
     }
 
-    // Video capture properties
-    cap.set(cv::CAP_PROP_FPS, 60);
-    cap.set(cv::CAP_PROP_FRAME_WIDTH, 2560);
-    cap.set(cv::CAP_PROP_FRAME_HEIGHT, 960);
-    cap.set(cv::CAP_PROP_BUFFERSIZE, 1);
+    // // Video capture properties
+    // cap.set(cv::CAP_PROP_FPS, 60);
+    // cap.set(cv::CAP_PROP_FRAME_WIDTH, 2560);
+    // cap.set(cv::CAP_PROP_FRAME_HEIGHT, 960);
+    // cap.set(cv::CAP_PROP_BUFFERSIZE, 1);
 
     // Calibration properties and variables
     int flags;
-    int downsample_factor;
-    cv::Size board_size;
+    int downsample_factor = std::strtol(argv[6], argv, 10);
+    cv::Size board_size(std::strtol(argv[4], argv, 10), std::strtol(argv[5], argv, 10));;
     float shape_separation;
     std::vector<std::vector<cv::Point3f>> pts_obj(1);
     switch (pattern) {
         case Pattern::CHECKERBOARD:
             flags = cv::CALIB_CB_ADAPTIVE_THRESH + cv::CALIB_CB_NORMALIZE_IMAGE + cv::CALIB_CB_FAST_CHECK;
-            downsample_factor = 4;
-            board_size = cv::Size(9,6);
             shape_separation = 0.0227;
             for(int i = 0; i < board_size.height; ++i)
                     for(int j = 0; j < board_size.width; ++j)
@@ -138,8 +139,6 @@ int main(int argc, char **argv)
             break;
         case Pattern::ASYMMETRIC_CIRCLES:
             flags = cv::CALIB_CB_ASYMMETRIC_GRID + cv::CALIB_CB_CLUSTERING;
-            downsample_factor = 1;
-            board_size = cv::Size(4,11);
             shape_separation = 0.020;
             for(int i = 0; i < board_size.height; ++i)
                     for(int j = 0; j < board_size.width; ++j)
